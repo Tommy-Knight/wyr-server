@@ -8,25 +8,59 @@ const app = express();
 const port = process.env.PORT || 5001;
 
 // --- CORS Configuration ---
-const allowedOrigins = [
-	process.env.FRONTEND_URL, 
-	'http://localhost:3000', 
-];
+const allowedOrigins = [];
+
+// Add development URL if defined
+if (process.env.DEV_FRONTEND_URL) {
+	allowedOrigins.push(process.env.DEV_FRONTEND_URL); // e.g., http://localhost:3000
+} else {
+	// Fallback for local development if DEV_FRONTEND_URL isn't set
+	allowedOrigins.push('http://localhost:3000');
+}
+
+// Add Production URL(s) based on FRONTEND_URL
+if (process.env.FRONTEND_URL) {
+	const prodUrl = process.env.FRONTEND_URL.replace(/\/$/, ''); // Remove trailing slash if present
+	allowedOrigins.push(prodUrl);
+
+	try {
+		const url = new URL(prodUrl);
+		if (!url.hostname.startsWith('www.')) {
+			// Add www. version if base URL doesn't have it
+			const wwwHostname = 'www.' + url.hostname;
+			const wwwUrl = `${url.protocol}//${wwwHostname}${
+				url.port ? ':' + url.port : ''
+			}${url.pathname}`;
+			allowedOrigins.push(wwwUrl.replace(/\/$/, ''));
+		} else if (url.hostname.startsWith('www.')) {
+			// Add non-www. version if base URL has it
+			const nonWwwHostname = url.hostname.substring(4);
+			const nonWwwUrl = `${url.protocol}//${nonWwwHostname}${
+				url.port ? ':' + url.port : ''
+			}${url.pathname}`;
+			allowedOrigins.push(nonWwwUrl.replace(/\/$/, ''));
+		}
+	} catch (e) {
+		console.error('Error parsing FRONTEND_URL for www/non-www variations:', e);
+		// If parsing fails, we still have the original prodUrl in the list
+	}
+}
+
+console.log('Allowed CORS Origins:', allowedOrigins); // Log allowed origins on startup
 
 const corsOptions = {
 	origin: function (origin, callback) {
-	
 		if (!origin || allowedOrigins.indexOf(origin) !== -1) {
 			callback(null, true);
 		} else {
-			console.warn(`CORS blocked for origin: ${origin}`); 
-			callback(new Error('Not allowed by CORS'));
+			console.warn(`CORS blocked for origin: ${origin}`);
+			callback(new Error(`Origin ${origin} not allowed by CORS`));
 		}
 	},
-	optionsSuccessStatus: 200, 
+	optionsSuccessStatus: 200,
 };
-// --- Database Configuration ---
 
+// --- Database Configuration ---
 const dbConfig = {
 	server:
 		process.env.DB_SERVER ||
@@ -42,16 +76,16 @@ const dbConfig = {
 		process.env.DB_USER ||
 		(process.env.DATABASE_URL
 			? process.env.DATABASE_URL.match(/User ID=([^;]+)/)[1]
-			: null), // Use SQL User ID
+			: null),
 	password:
 		process.env.DB_PASSWORD ||
 		(process.env.DATABASE_URL
 			? process.env.DATABASE_URL.match(/Password=([^;]+)/)[1]
-			: null), // Use SQL Password
-	port: 1433, // Default SQL Server port
+			: null),
+	port: 1433,
 	options: {
-		encrypt: true, // Required for Azure SQL
-		trustServerCertificate: false, // Recommended for Azure SQL
+		encrypt: true,
+		trustServerCertificate: false,
 	},
 	pool: {
 		max: 10,
@@ -60,95 +94,77 @@ const dbConfig = {
 	},
 };
 
-// Add robust error checking for parsed values
+// Validate essential DB config from environment variables
 if (!dbConfig.server || !dbConfig.database || !dbConfig.user || !dbConfig.password) {
 	console.error(
-		'Database configuration is incomplete. Check .env file and DATABASE_URL format.'
+		'Database configuration is incomplete. Check .env file and ensure DATABASE_URL is set correctly or individual DB_ variables are present.'
 	);
-	// Optionally check if DATABASE_URL itself exists if parsing failed
-	if (!process.env.DATABASE_URL) {
-		console.error('DATABASE_URL is missing in the .env file.');
-	} else {
-		console.error(
-			'Could not parse all required components (Server, Initial Catalog, User ID, Password) from DATABASE_URL.'
-		);
+	if (
+		!process.env.DATABASE_URL &&
+		(!process.env.DB_SERVER ||
+			!process.env.DB_DATABASE ||
+			!process.env.DB_USER ||
+			!process.env.DB_PASSWORD)
+	) {
+		console.error('Missing required database environment variables.');
 	}
-	process.exit(1); // Exit if config is bad
+	process.exit(1);
 }
 
 // --- Middleware ---
 app.use(cors(corsOptions));
 app.use(express.json());
 
-// --- Database Connection Pool ---
+// --- Database Connection ---
 let pool;
 async function connectDb() {
 	try {
-		console.log('Attempting to connect to database using SQL Authentication...');
-		console.log(
-			`Server: ${dbConfig.server}, Database: ${dbConfig.database}, User: ${dbConfig.user}`
-		); // Log details (excluding password!)
+		console.log('Attempting to connect to database...');
 		pool = await sql.connect(dbConfig);
 		console.log('Database connection successful!');
-
-		pool.on('error', (err) => {
-			console.error('Database Pool Error:', err);
-		});
+		pool.on('error', (err) => console.error('Database Pool Error:', err));
 	} catch (err) {
-		console.error('Database Connection Failed:', err.originalError || err); // Show original error if available
-		// Provide more specific feedback based on common errors
+		console.error('Database Connection Failed:', err.originalError || err);
 		if (err.code === 'ELOGIN') {
-			console.error('Login failed. Check username and password in your .env file.');
-		} else if (err.code === 'ESOCKET' && err.message.includes('ECONNREFUSED')) {
+			console.error('Login failed. Check credentials.');
+		} else if (err.code === 'ESOCKET') {
 			console.error(
-				'Connection refused. Check server name, port, and firewall rules.'
-			);
-		} else if (err.code === 'ESOCKET' && err.message.includes('ENOTFOUND')) {
-			console.error('Server not found. Check the server name in your .env file.');
-		} else if (err.message.includes('firewall rule')) {
-			console.error(
-				'Firewall rule error. Ensure your client IP address is allowed in Azure SQL Server firewall settings.'
+				'Connection error. Check server name, port, network access, and firewall rules.'
 			);
 		}
-		process.exit(1);
+		process.exit(1); 
 	}
 }
 
-// --- API Routes ---
 
-// Example Test Route
+// Base API route
 app.get('/api', (req, res) => {
 	res.json({ message: 'Welcome to the WYR API!' });
 });
 
-// GET a random WYR question (Simplified Flagging)
+// GET random WYR question
 app.get('/api/wyr/question', async (req, res) => {
 	if (!pool) return res.status(503).json({ error: 'Database not connected' });
 	try {
-		const result = await // MODIFICATION: WHERE clause checks the BIT column
-		pool.request().query(`
-                SELECT TOP 1
-                    id,
-                    optionA_text,
-                    optionB_text,
-                    optionA_votes,
-                    optionB_votes
-                FROM WouldYouRatherQuestions
-                WHERE is_flagged = 0 -- Only get non-flagged questions (0 means false)
-                ORDER BY NEWID();
-            `);
+		const result = await pool.request().query(`
+            SELECT TOP 1 id, optionA_text, optionB_text, optionA_votes, optionB_votes
+            FROM WouldYouRatherQuestions
+            WHERE is_flagged = 0
+            ORDER BY NEWID();
+        `);
 
 		if (result.recordset.length === 0) {
 			return res.status(404).json({ error: 'No available questions found' });
 		}
 
 		const question = result.recordset[0];
-		// Calculate percentages (same logic as before)
 		const totalVotes = question.optionA_votes + question.optionB_votes;
 		question.optionA_percentage =
 			totalVotes === 0 ? 0 : Math.round((question.optionA_votes / totalVotes) * 100);
 		question.optionB_percentage =
 			totalVotes === 0 ? 0 : Math.round((question.optionB_votes / totalVotes) * 100);
+
+		// Adjust percentages if rounding causes them not to sum to 100
 		if (
 			totalVotes > 0 &&
 			question.optionA_percentage + question.optionB_percentage !== 100
@@ -162,29 +178,41 @@ app.get('/api/wyr/question', async (req, res) => {
 	}
 });
 
-// POST a vote for a specific option
+// POST vote for a specific option
 app.post('/api/wyr/vote/:questionId/:option', async (req, res) => {
 	if (!pool) return res.status(503).json({ error: 'Database not connected' });
+
 	const { questionId, option } = req.params;
 	const voteOption = option.toUpperCase();
+
 	if (voteOption !== 'A' && voteOption !== 'B') {
 		return res
 			.status(400)
 			.json({ error: 'Invalid option specified. Use "A" or "B".' });
 	}
+	if (isNaN(parseInt(questionId))) {
+		return res.status(400).json({ error: 'Invalid question ID format.' });
+	}
+
 	const columnToIncrement = voteOption === 'A' ? 'optionA_votes' : 'optionB_votes';
+
 	try {
 		const request = pool.request();
 		request.input('id', sql.Int, questionId);
+
 		const result = await request.query(`
             UPDATE WouldYouRatherQuestions
             SET ${columnToIncrement} = ${columnToIncrement} + 1
             OUTPUT INSERTED.id, INSERTED.optionA_votes, INSERTED.optionB_votes
-            WHERE id = @id;
+            WHERE id = @id AND is_flagged = 0; -- Prevent voting on flagged questions
         `);
+
 		if (result.recordset.length === 0) {
-			return res.status(404).json({ error: 'Question not found' });
+			return res
+				.status(404)
+				.json({ error: 'Question not found or cannot be voted on.' });
 		}
+
 		const updatedVotes = result.recordset[0];
 		const totalVotes = updatedVotes.optionA_votes + updatedVotes.optionB_votes;
 		const percentages = {
@@ -200,6 +228,7 @@ app.post('/api/wyr/vote/:questionId/:option', async (req, res) => {
 		if (totalVotes > 0 && percentages.optionA + percentages.optionB !== 100) {
 			percentages.optionB = 100 - percentages.optionA;
 		}
+
 		res.status(200).json({
 			message: 'Vote recorded successfully',
 			questionId: updatedVotes.id,
@@ -213,10 +242,11 @@ app.post('/api/wyr/vote/:questionId/:option', async (req, res) => {
 	}
 });
 
-// POST a new WYR question
+// POST new WYR question
 app.post('/api/wyr/submit', async (req, res) => {
 	if (!pool) return res.status(503).json({ error: 'Database not connected' });
 	const { optionA, optionB } = req.body;
+
 	if (
 		!optionA ||
 		!optionB ||
@@ -225,13 +255,19 @@ app.post('/api/wyr/submit', async (req, res) => {
 		optionA.trim() === '' ||
 		optionB.trim() === ''
 	) {
-		return res.status(400).json({
-			error: 'Both optionA and optionB must be provided as non-empty strings.',
-		});
+		return res
+			.status(400)
+			.json({
+				error: 'Both optionA and optionB must be provided as non-empty strings.',
+			});
 	}
-	if (optionA.length > 500 || optionB.length > 500) {
+	if (optionA.trim().length > 500 || optionB.trim().length > 500) {
 		return res.status(400).json({ error: 'Options cannot exceed 500 characters.' });
 	}
+	if (optionA.trim().toLowerCase() === optionB.trim().toLowerCase()) {
+		return res.status(400).json({ error: 'Options cannot be identical.' });
+	}
+
 	try {
 		const request = pool.request();
 		request.input('optionA', sql.NVarChar(500), optionA.trim());
@@ -246,17 +282,21 @@ app.post('/api/wyr/submit', async (req, res) => {
 			newQuestion: result.recordset[0],
 		});
 	} catch (err) {
+		if (err.message.includes('CK_DistinctOptions')) {
+			return res
+				.status(400)
+				.json({ error: 'Options cannot be identical (database check).' });
+		}
 		console.error('Error submitting question:', err);
 		res.status(500).json({ error: 'Failed to submit question' });
 	}
 });
 
-// POST to flag a specific question (Simplified Flagging)
+// POST to flag a question
 app.post('/api/wyr/flag/:questionId', async (req, res) => {
 	if (!pool) return res.status(503).json({ error: 'Database not connected' });
 
 	const { questionId } = req.params;
-
 	if (isNaN(parseInt(questionId))) {
 		return res.status(400).json({ error: 'Invalid question ID format.' });
 	}
@@ -265,23 +305,20 @@ app.post('/api/wyr/flag/:questionId', async (req, res) => {
 		const request = pool.request();
 		request.input('id', sql.Int, questionId);
 
-		// Set is_flagged to 1 (true)
 		const result = await request.query(`
             UPDATE WouldYouRatherQuestions
-            SET is_flagged = 1 -- Set flag to true
-            OUTPUT INSERTED.id -- Optional: return updated info
-            WHERE id = @id AND is_flagged = 0; -- Only flag if not already flagged
+            SET is_flagged = 1
+            OUTPUT INSERTED.id
+            WHERE id = @id AND is_flagged = 0;
         `);
 
 		if (result.recordset.length === 0) {
-			// Question not found OR it was already flagged
 			return res
 				.status(404)
 				.json({ error: 'Question not found or was already flagged.' });
 		}
 
 		console.log(`Question ID ${result.recordset[0].id} flagged.`);
-		// Changed message to reflect simpler action
 		res.status(200).json({ message: 'Question flagged successfully.' });
 	} catch (err) {
 		console.error('Error flagging question:', err);
@@ -293,10 +330,9 @@ app.post('/api/wyr/flag/:questionId', async (req, res) => {
 connectDb()
 	.then(() => {
 		app.listen(port, () => {
-			console.log(`Backend server running at http://localhost:${port}`);
-			console.log(`Allowed frontend origin for CORS: ${process.env.FRONTEND_URL}`);
+			console.log(`Backend server running on port ${port}`);
 		});
 	})
-	.catch((err) => {
+	.catch(() => {
 		console.error('Server failed to start due to database connection issues.');
 	});
