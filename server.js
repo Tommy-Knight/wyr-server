@@ -190,11 +190,13 @@ app.post(
 
 			console.log(`🗳️ Vote recorded for Question ID: ${id}, Option: ${voteOption}`);
 			res.json({
-				message: 'Vote recorded successfully',
-				questionId: 1,
-				optionAVotes: 11,
-				optionBVotes: 15,
-				percentages: { optionA: 42, optionB: 58 },
+				message: 'Vote recorded.',
+				questionId: id,
+				votes: {
+					optionA: optionA_votes,
+					optionB: optionB_votes,
+				},
+				percentages: percentages,
 			});
 		} catch (err) {
 			console.error(
