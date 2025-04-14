@@ -83,9 +83,7 @@ const dbConfig = {
 };
 
 if (!dbConfig.server || !dbConfig.database || !dbConfig.user || !dbConfig.password) {
-	console.error(
-		'❌ FATAL: Missing .env credentials '
-	);
+	console.error('❌ FATAL: Missing .env credentials ');
 	process.exit(1);
 }
 
@@ -119,9 +117,7 @@ async function connectDb() {
 		if (err.code === 'ELOGIN') {
 			console.error('🔑 Login failed. Check DB credentials.');
 		} else if (err.code === 'ESOCKET' || err.code === 'ENOTFOUND') {
-			console.error(
-				'🌐 Connection error'
-			);
+			console.error('🌐 Connection error');
 		}
 		process.exit(1);
 	}
@@ -146,13 +142,13 @@ app.get('/api/wyr/question', checkDbConnection, async (req, res) => {
 			console.warn('⚠️ No available questions found.');
 			return res.status(404).json({ error: 'No available questions found.' });
 		}
-
 		const question = result.recordset[0];
-		const percentages = calculateVotePercentages(
+		const calculatedPercentages = calculateVotePercentages(
 			question.optionA_votes,
 			question.optionB_votes
 		);
-
+		question.optionA_percentage = calculatedPercentages.optionA_percentage;
+		question.optionB_percentage = calculatedPercentages.optionB_percentage;
 		res.json(question);
 	} catch (err) {
 		console.error('❌ Error fetching question:', err.message);
@@ -186,9 +182,7 @@ app.post(
 
 			if (!result.recordset || result.recordset.length === 0) {
 				console.warn(`⚠️ Vote failed (ID: ${questionId} not found or flagged)`);
-				return res
-					.status(404)
-					.json({ error: 'Question not found.' });
+				return res.status(404).json({ error: 'Question not found.' });
 			}
 
 			const { id, optionA_votes, optionB_votes } = result.recordset[0];
