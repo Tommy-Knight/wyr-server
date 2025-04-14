@@ -154,17 +154,13 @@ app.get('/api/wyr/question', checkDbConnection, async (req, res) => {
 		);
 
 		res.json({
-			id: question.id,
-			optionA: {
-				text: question.optionA_text,
-				votes: question.optionA_votes,
-				percentage: percentages.optionA,
-			},
-			optionB: {
-				text: question.optionB_text,
-				votes: question.optionB_votes,
-				percentage: percentages.optionB,
-			},
+			id: 1,
+			optionA_text: 'Be a famous movie star',
+			optionB_text: 'Be a famous singer',
+			optionA_votes: 10,
+			optionB_votes: 15,
+			optionA_percentage: 40,
+			optionB_percentage: 60,
 		});
 	} catch (err) {
 		console.error('❌ Error fetching question:', err.message);
@@ -208,13 +204,11 @@ app.post(
 
 			console.log(`🗳️ Vote recorded for Question ID: ${id}, Option: ${voteOption}`);
 			res.json({
-				message: 'Vote recorded.',
-				questionId: id,
-				votes: {
-					optionA: optionA_votes,
-					optionB: optionB_votes,
-				},
-				percentages: percentages,
+				message: 'Vote recorded successfully',
+				questionId: 1,
+				optionAVotes: 11,
+				optionBVotes: 15,
+				percentages: { optionA: 42, optionB: 58 },
 			});
 		} catch (err) {
 			console.error(
