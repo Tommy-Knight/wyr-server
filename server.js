@@ -1,4 +1,3 @@
-// server.js
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -7,81 +6,70 @@ const sql = require('mssql');
 const app = express();
 const port = process.env.PORT || 5001;
 
-// --- CORS Configuration ---
-const allowedOrigins = [];
+// --- Helper Functions ---
 
-// Add development URL if defined
-if (process.env.DEV_FRONTEND_URL) {
-	allowedOrigins.push(process.env.DEV_FRONTEND_URL); // e.g., http://localhost:3000
-} else {
-	// Fallback for local development if DEV_FRONTEND_URL isn't set
-	allowedOrigins.push('http://localhost:3000');
-}
-
-// Add Production URL(s) based on FRONTEND_URL
-if (process.env.FRONTEND_URL) {
-	const prodUrl = process.env.FRONTEND_URL.replace(/\/$/, ''); // Remove trailing slash if present
-	allowedOrigins.push(prodUrl);
-
-	try {
-		const url = new URL(prodUrl);
-		if (!url.hostname.startsWith('www.')) {
-			// Add www. version if base URL doesn't have it
-			const wwwHostname = 'www.' + url.hostname;
-			const wwwUrl = `${url.protocol}//${wwwHostname}${
-				url.port ? ':' + url.port : ''
-			}${url.pathname}`;
-			allowedOrigins.push(wwwUrl.replace(/\/$/, ''));
-		} else if (url.hostname.startsWith('www.')) {
-			// Add non-www. version if base URL has it
-			const nonWwwHostname = url.hostname.substring(4);
-			const nonWwwUrl = `${url.protocol}//${nonWwwHostname}${
-				url.port ? ':' + url.port : ''
-			}${url.pathname}`;
-			allowedOrigins.push(nonWwwUrl.replace(/\/$/, ''));
-		}
-	} catch (e) {
-		console.error('Error parsing FRONTEND_URL for www/non-www variations:', e);
-		// If parsing fails, we still have the original prodUrl in the list
+const calculateVotePercentages = (votesA = 0, votesB = 0) => {
+	const totalVotes = votesA + votesB;
+	if (totalVotes === 0) {
+		return { optionA: 0, optionB: 0 };
 	}
-}
+	const percentageA = Math.round((votesA / totalVotes) * 100);
+	const percentageB = 100 - percentageA;
+	return { optionA: percentageA, optionB: percentageB };
+};
 
-console.log('Allowed CORS Origins:', allowedOrigins); // Log allowed origins on startup
+const generateAllowedOrigins = (rawUrl) => {
+	if (!rawUrl) return [];
+	const url = new URL(rawUrl.replace(/\/$/, ''));
+	const { protocol, hostname, port } = url;
+	const origins = [];
+	const formatOrigin = (host) => `${protocol}//${host}${port ? `:${port}` : ''}`;
+
+	origins.push(formatOrigin(hostname));
+
+	const hasWWW = hostname.startsWith('www.');
+	const altHostname = hasWWW ? hostname.slice(4) : `www.${hostname}`;
+	if (altHostname !== hostname) {
+		origins.push(formatOrigin(altHostname));
+	}
+	return origins;
+};
+
+// --- CORS  ---
+
+const allowedOrigins = [
+	process.env.DEV_FRONTEND_URL || 'http://localhost:3000',
+	...generateAllowedOrigins(process.env.FRONTEND_URL),
+];
+
+console.log('Allowed CORS Origins:', allowedOrigins);
 
 const corsOptions = {
 	origin: function (origin, callback) {
-		if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+		if (!origin || allowedOrigins.includes(origin)) {
 			callback(null, true);
 		} else {
-			console.warn(`CORS blocked for origin: ${origin}`);
+			console.warn(`🚫 CORS blocked for origin: ${origin}`);
 			callback(new Error(`Origin ${origin} not allowed by CORS`));
 		}
 	},
 	optionsSuccessStatus: 200,
 };
 
-// --- Database Configuration ---
+// --- Db config ---
+
 const dbConfig = {
 	server:
 		process.env.DB_SERVER ||
-		(process.env.DATABASE_URL
-			? process.env.DATABASE_URL.match(/Server=tcp:([^,]+)/)[1]
-			: null),
+		process.env.DATABASE_URL?.match(/Server=tcp:([^,]+)/)?.[1],
 	database:
 		process.env.DB_DATABASE ||
-		(process.env.DATABASE_URL
-			? process.env.DATABASE_URL.match(/Initial Catalog=([^;]+)/)[1]
-			: null),
+		process.env.DATABASE_URL?.match(/Initial Catalog=([^;]+)/)?.[1],
 	user:
-		process.env.DB_USER ||
-		(process.env.DATABASE_URL
-			? process.env.DATABASE_URL.match(/User ID=([^;]+)/)[1]
-			: null),
+		process.env.DB_USER || process.env.DATABASE_URL?.match(/User ID=([^;]+)/)?.[1],
 	password:
 		process.env.DB_PASSWORD ||
-		(process.env.DATABASE_URL
-			? process.env.DATABASE_URL.match(/Password=([^;]+)/)[1]
-			: null),
+		process.env.DATABASE_URL?.match(/Password=([^;]+)/)?.[1],
 	port: 1433,
 	options: {
 		encrypt: true,
@@ -94,57 +82,58 @@ const dbConfig = {
 	},
 };
 
-// Validate essential DB config from environment variables
 if (!dbConfig.server || !dbConfig.database || !dbConfig.user || !dbConfig.password) {
 	console.error(
-		'Database configuration is incomplete. Check .env file and ensure DATABASE_URL is set correctly or individual DB_ variables are present.'
+		'❌ FATAL: Missing .env credentials '
 	);
-	if (
-		!process.env.DATABASE_URL &&
-		(!process.env.DB_SERVER ||
-			!process.env.DB_DATABASE ||
-			!process.env.DB_USER ||
-			!process.env.DB_PASSWORD)
-	) {
-		console.error('Missing required database environment variables.');
-	}
 	process.exit(1);
 }
 
 // --- Middleware ---
+
 app.use(cors(corsOptions));
 app.use(express.json());
 
-// --- Database Connection ---
+const checkDbConnection = (req, res, next) => {
+	if (!pool) {
+		console.error('🚨 DB Pool unavailable for request!');
+		return res.status(503).json({ error: 'Database unavailable.' });
+	}
+	next();
+};
+
+// --- Database  ---
+
 let pool;
 async function connectDb() {
 	try {
-		console.log('Attempting to connect to database...');
+		console.log('🔌 Connecting to Database...');
 		pool = await sql.connect(dbConfig);
-		console.log('Database connection successful!');
-		pool.on('error', (err) => console.error('Database Pool Error:', err));
+		console.log('✅ Database connected!');
+		pool.on('error', (err) => console.error('⚠️ DB Pool Error:', err));
 	} catch (err) {
-		console.error('Database Connection Failed:', err.originalError || err);
+		console.error(
+			'❌ Database Connection Failed',
+			err.originalError?.message || err.message
+		);
 		if (err.code === 'ELOGIN') {
-			console.error('Login failed. Check credentials.');
-		} else if (err.code === 'ESOCKET') {
+			console.error('🔑 Login failed. Check DB credentials.');
+		} else if (err.code === 'ESOCKET' || err.code === 'ENOTFOUND') {
 			console.error(
-				'Connection error. Check server name, port, network access, and firewall rules.'
+				'🌐 Connection error'
 			);
 		}
-		process.exit(1); 
+		process.exit(1);
 	}
 }
 
+// --- API Routes ---
 
-// Base API route
 app.get('/api', (req, res) => {
-	res.json({ message: 'Welcome to the WYR API!' });
+	res.json({ message: 'Would You Rather API!' });
 });
 
-// GET random WYR question
-app.get('/api/wyr/question', async (req, res) => {
-	if (!pool) return res.status(503).json({ error: 'Database not connected' });
+app.get('/api/wyr/question', checkDbConnection, async (req, res) => {
 	try {
 		const result = await pool.request().query(`
             SELECT TOP 1 id, optionA_text, optionB_text, optionA_votes, optionB_votes
@@ -153,186 +142,175 @@ app.get('/api/wyr/question', async (req, res) => {
             ORDER BY NEWID();
         `);
 
-		if (result.recordset.length === 0) {
-			return res.status(404).json({ error: 'No available questions found' });
+		if (!result.recordset || result.recordset.length === 0) {
+			console.warn('⚠️ No available questions found.');
+			return res.status(404).json({ error: 'No available questions found.' });
 		}
 
 		const question = result.recordset[0];
-		const totalVotes = question.optionA_votes + question.optionB_votes;
-		question.optionA_percentage =
-			totalVotes === 0 ? 0 : Math.round((question.optionA_votes / totalVotes) * 100);
-		question.optionB_percentage =
-			totalVotes === 0 ? 0 : Math.round((question.optionB_votes / totalVotes) * 100);
+		const percentages = calculateVotePercentages(
+			question.optionA_votes,
+			question.optionB_votes
+		);
 
-		// Adjust percentages if rounding causes them not to sum to 100
-		if (
-			totalVotes > 0 &&
-			question.optionA_percentage + question.optionB_percentage !== 100
-		) {
-			question.optionB_percentage = 100 - question.optionA_percentage;
-		}
-		res.json(question);
-	} catch (err) {
-		console.error('Error fetching question:', err);
-		res.status(500).json({ error: 'Failed to fetch question' });
-	}
-});
-
-// POST vote for a specific option
-app.post('/api/wyr/vote/:questionId/:option', async (req, res) => {
-	if (!pool) return res.status(503).json({ error: 'Database not connected' });
-
-	const { questionId, option } = req.params;
-	const voteOption = option.toUpperCase();
-
-	if (voteOption !== 'A' && voteOption !== 'B') {
-		return res
-			.status(400)
-			.json({ error: 'Invalid option specified. Use "A" or "B".' });
-	}
-	if (isNaN(parseInt(questionId))) {
-		return res.status(400).json({ error: 'Invalid question ID format.' });
-	}
-
-	const columnToIncrement = voteOption === 'A' ? 'optionA_votes' : 'optionB_votes';
-
-	try {
-		const request = pool.request();
-		request.input('id', sql.Int, questionId);
-
-		const result = await request.query(`
-            UPDATE WouldYouRatherQuestions
-            SET ${columnToIncrement} = ${columnToIncrement} + 1
-            OUTPUT INSERTED.id, INSERTED.optionA_votes, INSERTED.optionB_votes
-            WHERE id = @id AND is_flagged = 0; -- Prevent voting on flagged questions
-        `);
-
-		if (result.recordset.length === 0) {
-			return res
-				.status(404)
-				.json({ error: 'Question not found or cannot be voted on.' });
-		}
-
-		const updatedVotes = result.recordset[0];
-		const totalVotes = updatedVotes.optionA_votes + updatedVotes.optionB_votes;
-		const percentages = {
-			optionA:
-				totalVotes === 0
-					? 0
-					: Math.round((updatedVotes.optionA_votes / totalVotes) * 100),
-			optionB:
-				totalVotes === 0
-					? 0
-					: Math.round((updatedVotes.optionB_votes / totalVotes) * 100),
-		};
-		if (totalVotes > 0 && percentages.optionA + percentages.optionB !== 100) {
-			percentages.optionB = 100 - percentages.optionA;
-		}
-
-		res.status(200).json({
-			message: 'Vote recorded successfully',
-			questionId: updatedVotes.id,
-			optionAVotes: updatedVotes.optionA_votes,
-			optionBVotes: updatedVotes.optionB_votes,
-			percentages: percentages,
+		res.json({
+			id: question.id,
+			optionA: {
+				text: question.optionA_text,
+				votes: question.optionA_votes,
+				percentage: percentages.optionA,
+			},
+			optionB: {
+				text: question.optionB_text,
+				votes: question.optionB_votes,
+				percentage: percentages.optionB,
+			},
 		});
 	} catch (err) {
-		console.error('Error recording vote:', err);
-		res.status(500).json({ error: 'Failed to record vote' });
+		console.error('❌ Error fetching question:', err.message);
+		res.status(500).json({ error: 'Failed to fetch question.' });
 	}
 });
 
-// POST new WYR question
-app.post('/api/wyr/submit', async (req, res) => {
-	if (!pool) return res.status(503).json({ error: 'Database not connected' });
-	const { optionA, optionB } = req.body;
+app.post(
+	'/api/wyr/vote/:questionId/:option',
+	checkDbConnection,
+	async (req, res) => {
+		const { questionId: questionIdStr, option } = req.params;
+		const voteOption = option?.toUpperCase();
+		const questionId = parseInt(questionIdStr, 10);
 
-	if (
-		!optionA ||
-		!optionB ||
-		typeof optionA !== 'string' ||
-		typeof optionB !== 'string' ||
-		optionA.trim() === '' ||
-		optionB.trim() === ''
-	) {
-		return res
-			.status(400)
-			.json({
-				error: 'Both optionA and optionB must be provided as non-empty strings.',
+		if (isNaN(questionId) || questionId <= 0 || !['A', 'B'].includes(voteOption)) {
+			return res.status(400).json({
+				error: 'Invalid input',
 			});
+		}
+
+		const columnToIncrement = voteOption === 'A' ? 'optionA_votes' : 'optionB_votes';
+
+		try {
+			const result = await pool.request().input('id', sql.Int, questionId).query(`
+                UPDATE WouldYouRatherQuestions
+                SET ${columnToIncrement} = ${columnToIncrement} + 1
+                OUTPUT INSERTED.id, INSERTED.optionA_votes, INSERTED.optionB_votes
+                WHERE id = @id AND is_flagged = 0;
+            `);
+
+			if (!result.recordset || result.recordset.length === 0) {
+				console.warn(`⚠️ Vote failed (ID: ${questionId} not found or flagged)`);
+				return res
+					.status(404)
+					.json({ error: 'Question not found.' });
+			}
+
+			const { id, optionA_votes, optionB_votes } = result.recordset[0];
+			const percentages = calculateVotePercentages(optionA_votes, optionB_votes);
+
+			console.log(`🗳️ Vote recorded for Question ID: ${id}, Option: ${voteOption}`);
+			res.json({
+				message: 'Vote recorded.',
+				questionId: id,
+				votes: {
+					optionA: optionA_votes,
+					optionB: optionB_votes,
+				},
+				percentages: percentages,
+			});
+		} catch (err) {
+			console.error(
+				`❌ Vote Error (ID: ${questionId}, Opt: ${voteOption}):`,
+				err.message
+			);
+			res.status(500).json({ error: 'Failed to record vote.' });
+		}
 	}
-	if (optionA.trim().length > 500 || optionB.trim().length > 500) {
-		return res.status(400).json({ error: 'Options cannot exceed 500 characters.' });
+);
+
+app.post('/api/wyr/submit', checkDbConnection, async (req, res) => {
+	const { optionA, optionB } = req.body;
+	const textA = typeof optionA === 'string' ? optionA.trim() : '';
+	const textB = typeof optionB === 'string' ? optionB.trim() : '';
+
+	if (!textA || !textB) {
+		return res.status(400).json({ error: 'Options required.' });
 	}
-	if (optionA.trim().toLowerCase() === optionB.trim().toLowerCase()) {
-		return res.status(400).json({ error: 'Options cannot be identical.' });
+	if (textA.length > 500 || textB.length > 500) {
+		return res.status(400).json({ error: 'Options exceed 500 chars.' });
+	}
+	if (textA.toLowerCase() === textB.toLowerCase()) {
+		return res.status(400).json({ error: 'Options are identical.' });
 	}
 
 	try {
-		const request = pool.request();
-		request.input('optionA', sql.NVarChar(500), optionA.trim());
-		request.input('optionB', sql.NVarChar(500), optionB.trim());
-		const result = await request.query(`
-            INSERT INTO WouldYouRatherQuestions (optionA_text, optionB_text)
-            OUTPUT INSERTED.id, INSERTED.optionA_text, INSERTED.optionB_text
-            VALUES (@optionA, @optionB);
-        `);
+		const result = await pool
+			.request()
+			.input('optionA', sql.NVarChar(500), textA)
+			.input('optionB', sql.NVarChar(500), textB).query(`
+                INSERT INTO WouldYouRatherQuestions (optionA_text, optionB_text)
+                OUTPUT INSERTED.id, INSERTED.optionA_text, INSERTED.optionB_text
+                VALUES (@optionA, @optionB);
+            `);
+
+		console.log(`✅ Submitted Question ID: ${result.recordset[0].id}`);
 		res.status(201).json({
-			message: 'Question submitted successfully',
-			newQuestion: result.recordset[0],
+			message: 'Question submitted.',
+			question: result.recordset[0],
 		});
 	} catch (err) {
-		if (err.message.includes('CK_DistinctOptions')) {
-			return res
-				.status(400)
-				.json({ error: 'Options cannot be identical (database check).' });
-		}
-		console.error('Error submitting question:', err);
-		res.status(500).json({ error: 'Failed to submit question' });
+		let statusCode = 500;
+		let errorMessage = 'Submission failed.';
+		let logPrefix = '❌ Submit Error:';
+		let logFn = console.error;
+
+		logFn(logPrefix, err.message);
+		res.status(statusCode).json({ error: errorMessage });
 	}
 });
 
-// POST to flag a question
-app.post('/api/wyr/flag/:questionId', async (req, res) => {
-	if (!pool) return res.status(503).json({ error: 'Database not connected' });
+app.post('/api/wyr/flag/:questionId', checkDbConnection, async (req, res) => {
+	const questionId = parseInt(req.params.questionId, 10);
 
-	const { questionId } = req.params;
-	if (isNaN(parseInt(questionId))) {
-		return res.status(400).json({ error: 'Invalid question ID format.' });
+	if (isNaN(questionId) || questionId <= 0) {
+		return res
+			.status(400)
+			.json({ error: 'Invalid Question ID (must be positive number).' });
 	}
 
 	try {
-		const request = pool.request();
-		request.input('id', sql.Int, questionId);
-
-		const result = await request.query(`
-            UPDATE WouldYouRatherQuestions
-            SET is_flagged = 1
-            OUTPUT INSERTED.id
-            WHERE id = @id AND is_flagged = 0;
-        `);
+		const result = await pool.request().input('id', sql.Int, questionId).query(`
+                UPDATE WouldYouRatherQuestions
+                SET is_flagged = 1
+                OUTPUT INSERTED.id
+                WHERE id = @id AND is_flagged = 0;
+            `);
 
 		if (result.recordset.length === 0) {
+			console.warn(
+				`⚠️ Flag attempt failed (ID: ${questionId} not found or already flagged)`
+			);
 			return res
 				.status(404)
-				.json({ error: 'Question not found or was already flagged.' });
+				.json({ error: 'Question not found or already flagged.' });
 		}
 
-		console.log(`Question ID ${result.recordset[0].id} flagged.`);
-		res.status(200).json({ message: 'Question flagged successfully.' });
+		console.log(`🚩 Question ${result.recordset[0].id} flagged.`);
+		res.status(200).json({ message: 'Question flagged.' });
 	} catch (err) {
-		console.error('Error flagging question:', err);
-		res.status(500).json({ error: 'Failed to flag question' });
+		console.error(`❌ Flag Error (ID: ${questionId}):`, err.message);
+		res.status(500).json({ error: 'Flagging failed.' });
 	}
 });
 
 // --- Start Server ---
-connectDb()
-	.then(() => {
-		app.listen(port, () => {
-			console.log(`Backend server running on port ${port}`);
-		});
-	})
-	.catch(() => {
-		console.error('Server failed to start due to database connection issues.');
+
+async function startServer() {
+	await connectDb();
+	app.listen(port, () => {
+		console.log(`🚀 Server running on port ${port}`);
 	});
+}
+
+startServer().catch((err) => {
+	console.error('💥 Server failed to start:', err);
+	process.exit(1);
+});
