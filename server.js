@@ -153,15 +153,7 @@ app.get('/api/wyr/question', checkDbConnection, async (req, res) => {
 			question.optionB_votes
 		);
 
-		res.json({
-			id: 1,
-			optionA_text: 'Be a famous movie star',
-			optionB_text: 'Be a famous singer',
-			optionA_votes: 10,
-			optionB_votes: 15,
-			optionA_percentage: 40,
-			optionB_percentage: 60,
-		});
+		res.json(question);
 	} catch (err) {
 		console.error('❌ Error fetching question:', err.message);
 		res.status(500).json({ error: 'Failed to fetch question.' });
